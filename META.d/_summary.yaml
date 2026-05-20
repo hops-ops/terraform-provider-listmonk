@@ -1,0 +1,15 @@
+---
+schema: 1.1
+
+partition: tf-ecosystem
+
+summary:
+  owner: hops-ops
+  description: |
+    Terraform provider for Listmonk (https://listmonk.app), the
+    self-hosted newsletter / mailing-list manager. Manages the
+    Listmonk settings table (security.oidc, app.root_url, ...),
+    user roles, API users, lists, list roles, and templates via the
+    /api/ REST API. Upstream for the upjet-generated Crossplane
+    provider github.com/hops-ops/provider-listmonk.
+  visibility: public
