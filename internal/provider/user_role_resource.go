@@ -121,9 +121,12 @@ func (r *UserRoleResource) Read(ctx context.Context, req resource.ReadRequest, r
 	// upjet calls Read BEFORE Create to observe whether the resource
 	// already exists. For IdentifierFromProvider-style external-name
 	// configs the ID is server-assigned at Create time, so on the
-	// first observe the state.ID is empty — treat that as
-	// "resource not found, nothing to read".
+	// first observe the state.ID is empty. Tell Terraform the resource
+	// doesn't exist (RemoveResource) so upjet's controller knows to
+	// fall through to Create — bare `return` leaves an inconsistent
+	// state shape and upjet errors with "cannot find id in tfstate".
 	if state.ID.IsNull() || state.ID.IsUnknown() || state.ID.ValueString() == "" {
+		resp.State.RemoveResource(ctx)
 		return
 	}
 

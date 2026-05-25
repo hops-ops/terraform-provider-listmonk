@@ -166,6 +166,7 @@ func (r *UserResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	// Same upjet pre-Create observe handling as UserRoleResource —
 	// empty state.ID = "not found yet, nothing to read".
 	if state.ID.IsNull() || state.ID.IsUnknown() || state.ID.ValueString() == "" {
+		resp.State.RemoveResource(ctx)
 		return
 	}
 	id, err := strconv.ParseInt(state.ID.ValueString(), 10, 64)
