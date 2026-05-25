@@ -118,6 +118,15 @@ func (r *UserRoleResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
+	// upjet calls Read BEFORE Create to observe whether the resource
+	// already exists. For IdentifierFromProvider-style external-name
+	// configs the ID is server-assigned at Create time, so on the
+	// first observe the state.ID is empty — treat that as
+	// "resource not found, nothing to read".
+	if state.ID.IsNull() || state.ID.IsUnknown() || state.ID.ValueString() == "" {
+		return
+	}
+
 	id, err := strconv.ParseInt(state.ID.ValueString(), 10, 64)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid user_role id in state", err.Error())
