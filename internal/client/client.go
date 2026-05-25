@@ -197,3 +197,247 @@ func (c *Client) UpdateSettingByKey(ctx context.Context, key string, value json.
 	// straight through to UPDATE settings SET value = $2 ...
 	return c.do(ctx, http.MethodPut, "/settings/"+key, value, nil)
 }
+
+// ---------------------------------------------------------------------
+// User roles (the `roles` table, filtered by type='user')
+//
+// Upstream routes (cmd/handlers.go):
+//   GET    /api/roles/users      — list all user roles
+//   POST   /api/roles/users      — create
+//   PUT    /api/roles/users/:id  — update
+//   DELETE /api/roles/:id        — delete (singular: serves both user + list role deletes)
+//
+// There is no per-ID GET; we list + filter client-side for the Read path.
+// ---------------------------------------------------------------------
+
+// UserRole is the "user"-typed roles row shape from upstream
+// `models.Role`. Permissions are dotted-string scoped capabilities like
+// `settings:manage`, `users:get`, `lists:manage_all`.
+type UserRole struct {
+	ID          int64    `json:"id,omitempty"`
+	Name        string   `json:"name"`
+	Permissions []string `json:"permissions"`
+	CreatedAt   string   `json:"created_at,omitempty"`
+	UpdatedAt   string   `json:"updated_at,omitempty"`
+}
+
+func (c *Client) CreateUserRole(ctx context.Context, r *UserRole) (*UserRole, error) {
+	var out UserRole
+	if err := c.do(ctx, http.MethodPost, "/roles/users", r, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetUserRole lists all user roles and returns the one matching id.
+// Upstream has no per-ID GET — the cost is one full-list call per Read
+// pass; acceptable because the user-roles table is small (single-digit
+// rows in typical installs).
+func (c *Client) GetUserRole(ctx context.Context, id int64) (*UserRole, error) {
+	var all []UserRole
+	if err := c.do(ctx, http.MethodGet, "/roles/users", nil, &all); err != nil {
+		return nil, err
+	}
+	for i := range all {
+		if all[i].ID == id {
+			return &all[i], nil
+		}
+	}
+	return nil, &APIError{StatusCode: http.StatusNotFound, Method: http.MethodGet, Path: apiPrefix + "/roles/users", Body: fmt.Sprintf("no role with id=%d", id)}
+}
+
+func (c *Client) UpdateUserRole(ctx context.Context, id int64, r *UserRole) (*UserRole, error) {
+	var out UserRole
+	if err := c.do(ctx, http.MethodPut, fmt.Sprintf("/roles/users/%d", id), r, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) DeleteUserRole(ctx context.Context, id int64) error {
+	// DELETE /api/roles/:id (no `/users` segment — the same endpoint
+	// serves both user roles and list roles).
+	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/roles/%d", id), nil, nil)
+}
+
+// ---------------------------------------------------------------------
+// Users (the `users` table)
+//
+// Upstream routes (cmd/handlers.go):
+//   GET    /api/users        — list all
+//   GET    /api/users/:id    — get one
+//   POST   /api/users        — create
+//   PUT    /api/users/:id    — update
+//   DELETE /api/users/:id    — delete
+//
+// For `type=api` users, the user's password IS the token used for
+// HTTP Basic-Auth — the API returns it in plaintext on Create. The
+// apiUsers cache only refreshes at pod startup (see
+// reference_listmonk_apiusers_cache_at_startup); newly-created api
+// users are NOT immediately usable for Basic-Auth without a restart.
+// ---------------------------------------------------------------------
+
+// UserType is "user" (interactive admin, password_login true) or
+// "api" (machine credential, password = plaintext token).
+type UserType string
+
+const (
+	UserTypeUser UserType = "user"
+	UserTypeAPI  UserType = "api"
+)
+
+// UserStatus is "enabled" or "disabled". Disabled users still exist
+// (history is preserved) but can't authenticate.
+type UserStatus string
+
+const (
+	UserStatusEnabled  UserStatus = "enabled"
+	UserStatusDisabled UserStatus = "disabled"
+)
+
+// User mirrors upstream `models.User`. For type=api: PasswordLogin
+// is false; Password is the plaintext token returned at Create time
+// (and accepted at Update time when rotating). For type=user:
+// PasswordLogin is typically true; Password is the operator-chosen
+// password (stored bcrypt-hashed server-side; not returned on read).
+//
+// Asymmetric wire shape: POST/PUT requests accept flat
+// `user_role_id` + `list_role_id` integer fields, but GET responses
+// return nested `user_role: {id, name, permissions, ...}` + `list_role`
+// objects. Custom MarshalJSON / UnmarshalJSON bridges both — the Go
+// struct stays flat (UserRoleID + ListRoleID); marshal writes the
+// flat shape Listmonk expects on writes; unmarshal accepts either the
+// flat or nested forms and normalizes to the flat IDs.
+type User struct {
+	ID            int64      `json:"-"`
+	Username      string     `json:"-"`
+	Email         string     `json:"-"`
+	Name          string     `json:"-"`
+	Type          UserType   `json:"-"`
+	UserRoleID    int64      `json:"-"`
+	ListRoleID    *int64     `json:"-"`
+	Status        UserStatus `json:"-"`
+	PasswordLogin bool       `json:"-"`
+	Password      string     `json:"-"`
+	CreatedAt     string     `json:"-"`
+	UpdatedAt     string     `json:"-"`
+}
+
+// MarshalJSON emits the flat `user_role_id` / `list_role_id` shape
+// Listmonk's POST/PUT handlers accept.
+func (u User) MarshalJSON() ([]byte, error) {
+	wire := struct {
+		ID            int64      `json:"id,omitempty"`
+		Username      string     `json:"username"`
+		Email         string     `json:"email"`
+		Name          string     `json:"name"`
+		Type          UserType   `json:"type"`
+		UserRoleID    int64      `json:"user_role_id"`
+		ListRoleID    *int64     `json:"list_role_id,omitempty"`
+		Status        UserStatus `json:"status"`
+		PasswordLogin bool       `json:"password_login"`
+		Password      string     `json:"password,omitempty"`
+		CreatedAt     string     `json:"created_at,omitempty"`
+		UpdatedAt     string     `json:"updated_at,omitempty"`
+	}{
+		ID:            u.ID,
+		Username:      u.Username,
+		Email:         u.Email,
+		Name:          u.Name,
+		Type:          u.Type,
+		UserRoleID:    u.UserRoleID,
+		ListRoleID:    u.ListRoleID,
+		Status:        u.Status,
+		PasswordLogin: u.PasswordLogin,
+		Password:      u.Password,
+		CreatedAt:     u.CreatedAt,
+		UpdatedAt:     u.UpdatedAt,
+	}
+	return json.Marshal(wire)
+}
+
+// UnmarshalJSON accepts Listmonk's GET response shape — nested
+// `user_role` / `list_role` objects — and flattens to UserRoleID +
+// ListRoleID. Also tolerates a flat shape (in case upstream changes
+// or we're round-tripping our own output).
+func (u *User) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		ID            int64      `json:"id,omitempty"`
+		Username      string     `json:"username"`
+		Email         string     `json:"email"`
+		Name          string     `json:"name"`
+		Type          UserType   `json:"type"`
+		Status        UserStatus `json:"status"`
+		PasswordLogin bool       `json:"password_login"`
+		Password      string     `json:"password,omitempty"`
+		CreatedAt     string     `json:"created_at,omitempty"`
+		UpdatedAt     string     `json:"updated_at,omitempty"`
+		// Nested objects (Listmonk's GET shape)
+		UserRole *struct {
+			ID int64 `json:"id"`
+		} `json:"user_role,omitempty"`
+		ListRole *struct {
+			ID int64 `json:"id"`
+		} `json:"list_role,omitempty"`
+		// Flat fields (Listmonk's POST/PUT request shape; also accepted
+		// in case upstream ever flattens the response)
+		UserRoleIDFlat int64  `json:"user_role_id,omitempty"`
+		ListRoleIDFlat *int64 `json:"list_role_id,omitempty"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	u.ID = wire.ID
+	u.Username = wire.Username
+	u.Email = wire.Email
+	u.Name = wire.Name
+	u.Type = wire.Type
+	u.Status = wire.Status
+	u.PasswordLogin = wire.PasswordLogin
+	u.Password = wire.Password
+	u.CreatedAt = wire.CreatedAt
+	u.UpdatedAt = wire.UpdatedAt
+
+	switch {
+	case wire.UserRole != nil:
+		u.UserRoleID = wire.UserRole.ID
+	default:
+		u.UserRoleID = wire.UserRoleIDFlat
+	}
+	switch {
+	case wire.ListRole != nil:
+		id := wire.ListRole.ID
+		u.ListRoleID = &id
+	default:
+		u.ListRoleID = wire.ListRoleIDFlat
+	}
+	return nil
+}
+
+func (c *Client) CreateUser(ctx context.Context, u *User) (*User, error) {
+	var out User
+	if err := c.do(ctx, http.MethodPost, "/users", u, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetUser(ctx context.Context, id int64) (*User, error) {
+	var out User
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/users/%d", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdateUser(ctx context.Context, id int64, u *User) (*User, error) {
+	var out User
+	if err := c.do(ctx, http.MethodPut, fmt.Sprintf("/users/%d", id), u, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) DeleteUser(ctx context.Context, id int64) error {
+	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/users/%d", id), nil, nil)
+}

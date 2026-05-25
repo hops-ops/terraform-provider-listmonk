@@ -97,6 +97,9 @@ func (p *ListmonkProvider) Configure(ctx context.Context, req provider.Configure
 func (p *ListmonkProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewSecuritySettingsResource,
+		NewAppSettingsResource,
+		NewUserRoleResource,
+		NewUserResource,
 	}
 }
 
