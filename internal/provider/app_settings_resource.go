@@ -151,6 +151,13 @@ func (r *AppSettingsResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
+	// upjet pre-Create observe: empty state.ID → RemoveResource so
+	// upjet's controller doesn't error on missing tfstate id.
+	if state.ID.IsNull() || state.ID.IsUnknown() || state.ID.ValueString() == "" {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
 	bag, err := r.client.GetSettings(ctx)
 	if err != nil {
 		resp.Diagnostics.AddError("Listmonk GET /api/settings failed", err.Error())

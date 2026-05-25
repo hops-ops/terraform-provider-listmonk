@@ -180,6 +180,13 @@ func (r *SecuritySettingsResource) Read(ctx context.Context, req resource.ReadRe
 		return
 	}
 
+	// If state has no ID yet (upjet's pre-Create observe) OR no
+	// declared sub-blocks, the resource doesn't exist yet — tell
+	// Terraform via RemoveResource so upjet falls through to Create.
+	if state.ID.IsNull() || state.ID.IsUnknown() || state.ID.ValueString() == "" {
+		resp.State.RemoveResource(ctx)
+		return
+	}
 	if state.OIDC == nil {
 		// Nothing this resource manages — leave state alone.
 		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
